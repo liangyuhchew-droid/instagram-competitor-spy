@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 # ─────────────────────────────────────────────
 try:
     from instagrapi import Client as IGClient
-    from instagrapi.exceptions import LoginRequired, RateLimitError
+    from instagrapi.exceptions import LoginRequired, RateLimitError, ChallengeRequired
     INSTAGRAPI_AVAILABLE = True
 except ImportError:
     INSTAGRAPI_AVAILABLE = False
@@ -96,10 +96,24 @@ def init_instagram() -> Optional["IGClient"]:
         except Exception:
             log.warning("Cached session expired. Logging in fresh.")
 
-    cl.login(ig_user, ig_pass)
-    cl.dump_settings(SESSION_FILE)
-    log.info("Instagram login successful.")
-    return cl
+    try:
+        cl.login(ig_user, ig_pass)
+        cl.dump_settings(SESSION_FILE)
+        log.info("Instagram login successful.")
+        return cl
+    except ChallengeRequired:
+        log.warning(
+            "Instagram requires identity verification (ChallengeRequired). "
+            "This happens on new IPs. Open the Instagram app and approve the login, "
+            "then Railway will retry on the next 6-hour cycle. Skipping scrape this cycle."
+        )
+        return None
+    except LoginRequired:
+        log.error("Instagram credentials rejected. Check IG_USERNAME / IG_PASSWORD.")
+        return None
+    except Exception as e:
+        log.error(f"Instagram login failed: {e}. Skipping scrape this cycle.")
+        return None
 
 
 def init_anthropic() -> anthropic.Anthropic:
@@ -113,7 +127,7 @@ def init_anthropic() -> anthropic.Anthropic:
 # SCRAPER
 # ─────────────────────────────────────────────
 
-def scrape_account(cl: "IGClient", handle: str) -> list[dict]:
+def scrape_account(cl, handle: str) -> list:
     """Scrape recent posts from one account."""
     posts = []
     try:
@@ -191,7 +205,7 @@ Posts to classify:
 """
 
 
-def classify_posts(posts: list[dict], claude: anthropic.Anthropic) -> list[dict]:
+def classify_posts(posts: list, claude: anthropic.Anthropic) -> list:
     """Use Claude to batch-classify post topics."""
     if not posts:
         return posts
@@ -263,7 +277,7 @@ Analyse this data and return a JSON object:
 """
 
 
-def analyse_trends(posts: list[dict], claude: anthropic.Anthropic) -> Optional[dict]:
+def analyse_trends(posts: list, claude: anthropic.Anthropic):
     """Run trend analysis on this week's scraped posts."""
     if not posts:
         return None
@@ -312,7 +326,7 @@ def analyse_trends(posts: list[dict], claude: anthropic.Anthropic) -> Optional[d
 # SUPABASE STORAGE
 # ─────────────────────────────────────────────
 
-def save_posts_to_supabase(posts: list[dict], db: Client) -> int:
+def save_posts_to_supabase(posts: list, db: Client) -> int:
     """Upsert posts into competitor_posts table. Returns count saved."""
     if not posts:
         return 0
@@ -407,7 +421,7 @@ def run_spy():
     log.info(f"Total posts processed: {len(all_posts)}")
 
 
-def _mock_posts() -> list[dict]:
+def _mock_posts() -> list:
     """Mock data for testing without Instagram credentials."""
     return [
         {
