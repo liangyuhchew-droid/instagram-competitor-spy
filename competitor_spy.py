@@ -1,3 +1,4 @@
+# redeploy trigger
 """
 Competitor Spy Agent — Instagram Finance Niche
 Tracks mid-tier finance accounts (10k–100k followers)
