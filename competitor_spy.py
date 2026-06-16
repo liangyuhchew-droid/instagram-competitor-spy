@@ -1,4 +1,4 @@
-"""
+"""  # v2 — timezone-aware datetimes + posted_at column
 Competitor Spy Agent — Instagram Finance Niche
 Tracks mid-tier finance accounts (10k–100k followers)
 Stores data to Supabase for the Content Strategist to consume
