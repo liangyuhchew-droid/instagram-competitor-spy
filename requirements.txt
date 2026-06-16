@@ -1,0 +1,6 @@
+instagrapi
+anthropic
+supabase
+python-dotenv
+schedule
+httpx[socks]
