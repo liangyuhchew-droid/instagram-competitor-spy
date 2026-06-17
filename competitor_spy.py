@@ -1,6 +1,6 @@
 """  # v2 — timezone-aware datetimes + posted_at column
-Competitor Spy Agent — Instagram Finance Niche
-Tracks mid-tier finance accounts (10k–100k followers)
+Competitor Spy Agent — Instagram Smoking / Lifestyle Niche
+Tracks mid-tier smoking, cigar, and hookah lifestyle accounts (10k–100k followers)
 Stores data to Supabase for the Content Strategist to consume
 
 Stack: Python 3.11+ · instagrapi · anthropic · supabase-py · schedule
@@ -49,12 +49,12 @@ log = logging.getLogger(__name__)
 # CONFIG — edit these
 # ─────────────────────────────────────────────
 COMPETITOR_HANDLES = [
-    # Mid-tier finance accounts (10k–100k). Replace with real handles.
-    "humphreytalks",         # personal finance, casual tone
-    "lyfewithless",          # budgeting / frugality
-    "wealthwithsasha",       # investing for beginners
-    "calltoleap",            # investing for beginners, strong carousel game
-    "andrei_jikh",           # investing basics + money mindset
+    # Mid-tier smoking / cigar / lifestyle accounts (10k–100k). Verify follower counts periodically.
+    "cigarsandleisure",      # cigar lifestyle, aesthetic content
+    "stogieguys",            # cigar reviews and culture
+    "premiumcigarlife",      # premium cigar lifestyle
+    "hookahsocial",          # hookah / shisha lifestyle
+    "smokelifestyle",        # general smoking lifestyle content
 ]
 
 POSTS_PER_ACCOUNT = 12          # How many recent posts to scrape per account
