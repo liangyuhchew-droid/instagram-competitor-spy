@@ -1,8 +1,11 @@
 """
-Instagram Publisher Agent -- @levi.smokes Personal Finance
+Instagram Publisher Agent — @levi.smokes Personal Finance
 Publishes approved content_briefs to Instagram twice daily: 6am and 12pm SGT.
 Uses Instagram Graph API to create and publish carousel/image posts.
 Updates content_briefs status to 'published' after posting.
+
+NOTE: Instagram Graph API requires image URLs hosted publicly.
+Images are uploaded to a staging bucket (or use a Canva/S3 URL stored in brief).
 
 Run manually:    python instagram_publisher.py
 Run on schedule: python instagram_publisher.py --daemon
@@ -30,11 +33,15 @@ log = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
-# 6am SGT = 22:00 UTC prev day, 12pm SGT = 04:00 UTC
-PUBLISH_SLOTS_UTC = ["22:00", "04:00"]
+# Posts per day slots (SGT = UTC+8, so 6am SGT = 22:00 UTC prev day, 12pm SGT = 04:00 UTC)
+PUBLISH_SLOTS_UTC = ["22:00", "04:00"]  # corresponds to 6am and 12pm SGT
 
 
-def init_supabase():
+# ─────────────────────────────────────────────
+# CLIENTS
+# ─────────────────────────────────────────────
+
+def init_supabase() -> Client:
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
     if not url or not key:
@@ -42,7 +49,7 @@ def init_supabase():
     return create_client(url, key)
 
 
-def get_ig_credentials():
+def get_ig_credentials() -> tuple[str, str]:
     ig_account_id = os.environ.get("INSTAGRAM_ACCOUNT_ID")
     access_token = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
     if not ig_account_id or not access_token:
@@ -50,8 +57,15 @@ def get_ig_credentials():
     return ig_account_id, access_token
 
 
-def fetch_next_approved_brief(db):
-    """Get the next approved brief that hasn't been published yet. Priority: highest hook_score."""
+# ─────────────────────────────────────────────
+# DATA FETCHING
+# ─────────────────────────────────────────────
+
+def fetch_next_approved_brief(db: Client) -> Optional[dict]:
+    """
+    Get the next approved brief that hasn't been published yet.
+    Priority: highest hook_score first.
+    """
     try:
         result = (
             db.table("content_briefs")
@@ -73,7 +87,12 @@ def fetch_next_approved_brief(db):
         return None
 
 
-def create_single_image_container(ig_account_id, access_token, image_url, caption):
+# ─────────────────────────────────────────────
+# INSTAGRAM GRAPH API PUBLISHING
+# ─────────────────────────────────────────────
+
+def create_single_image_container(ig_account_id: str, access_token: str, image_url: str, caption: str) -> Optional[str]:
+    """Step 1: Create a media container for a single image post."""
     url = f"{GRAPH_BASE}/{ig_account_id}/media"
     payload = {
         "image_url": image_url,
@@ -87,7 +106,8 @@ def create_single_image_container(ig_account_id, access_token, image_url, captio
     return container_id
 
 
-def create_carousel_item_container(ig_account_id, access_token, image_url):
+def create_carousel_item_container(ig_account_id: str, access_token: str, image_url: str) -> Optional[str]:
+    """Create a carousel item container (no caption on individual slides)."""
     url = f"{GRAPH_BASE}/{ig_account_id}/media"
     payload = {
         "image_url": image_url,
@@ -99,7 +119,8 @@ def create_carousel_item_container(ig_account_id, access_token, image_url):
     return resp.json().get("id")
 
 
-def create_carousel_container(ig_account_id, access_token, item_ids, caption):
+def create_carousel_container(ig_account_id: str, access_token: str, item_ids: list[str], caption: str) -> Optional[str]:
+    """Create the parent carousel container."""
     url = f"{GRAPH_BASE}/{ig_account_id}/media"
     payload = {
         "media_type": "CAROUSEL",
@@ -114,13 +135,15 @@ def create_carousel_container(ig_account_id, access_token, item_ids, caption):
     return container_id
 
 
-def publish_container(ig_account_id, access_token, container_id):
+def publish_container(ig_account_id: str, access_token: str, container_id: str) -> Optional[str]:
+    """Step 2: Publish the container. Returns the media ID of the live post."""
     url = f"{GRAPH_BASE}/{ig_account_id}/media_publish"
     payload = {
         "creation_id": container_id,
         "access_token": access_token,
     }
-    time.sleep(5)  # Wait for container to be ready
+    # Wait for container to be ready
+    time.sleep(5)
     resp = requests.post(url, data=payload, timeout=30)
     resp.raise_for_status()
     media_id = resp.json().get("id")
@@ -128,7 +151,8 @@ def publish_container(ig_account_id, access_token, container_id):
     return media_id
 
 
-def get_post_permalink(media_id, access_token):
+def get_post_permalink(media_id: str, access_token: str) -> Optional[str]:
+    """Get the permalink of a published post."""
     url = f"{GRAPH_BASE}/{media_id}"
     params = {"fields": "permalink", "access_token": access_token}
     resp = requests.get(url, params=params, timeout=15)
@@ -136,16 +160,22 @@ def get_post_permalink(media_id, access_token):
     return resp.json().get("permalink")
 
 
-def publish_brief(brief, ig_account_id, access_token):
+def publish_brief(brief: dict, ig_account_id: str, access_token: str) -> Optional[str]:
+    """
+    Publish a content brief to Instagram.
+    Uses image_url from the brief (set by Canva export or image gen step).
+    Falls back to a placeholder if no image is set.
+    """
     caption = brief.get("caption", "")
     image_url = brief.get("image_url")
     post_format = brief.get("format", "carousel")
 
     if not image_url:
-        log.warning(f"No image_url for brief {brief['id']} -- skipping. Add image URLs first.")
+        log.warning(f"No image_url for brief {brief['id']} — skipping publish. Add image URLs first.")
         return None
 
-    # Parse image_url -- could be JSON array for carousel
+    # Parse image_url — could be a JSON array of URLs for carousel
+    image_urls = []
     if image_url.startswith("["):
         try:
             image_urls = json.loads(image_url)
@@ -155,6 +185,7 @@ def publish_brief(brief, ig_account_id, access_token):
         image_urls = [image_url]
 
     if post_format == "carousel" and len(image_urls) > 1:
+        # Multi-image carousel
         log.info(f"Publishing carousel with {len(image_urls)} slides...")
         item_ids = []
         for url in image_urls[:10]:  # IG max 10 slides
@@ -167,6 +198,7 @@ def publish_brief(brief, ig_account_id, access_token):
             return None
         container_id = create_carousel_container(ig_account_id, access_token, item_ids, caption)
     else:
+        # Single image post
         log.info("Publishing single image post...")
         container_id = create_single_image_container(ig_account_id, access_token, image_urls[0], caption)
 
@@ -177,10 +209,16 @@ def publish_brief(brief, ig_account_id, access_token):
     if not media_id:
         return None
 
-    return get_post_permalink(media_id, access_token)
+    permalink = get_post_permalink(media_id, access_token)
+    return permalink
 
 
-def mark_as_published(brief_id, permalink, db):
+# ─────────────────────────────────────────────
+# SUPABASE UPDATE
+# ─────────────────────────────────────────────
+
+def mark_as_published(brief_id: str, permalink: str, db: Client):
+    """Update the brief row with published status and URL."""
     db.table("content_briefs").update({
         "status": "published",
         "published_url": permalink,
@@ -189,13 +227,21 @@ def mark_as_published(brief_id, permalink, db):
     log.info(f"Marked brief {brief_id} as published: {permalink}")
 
 
+# ─────────────────────────────────────────────
+# MAIN PUBLISH CYCLE
+# ─────────────────────────────────────────────
+
 def run_publisher():
     log.info("=" * 50)
     log.info(f"Publisher running at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     log.info("=" * 50)
 
     db = init_supabase()
-    ig_account_id, access_token = get_ig_credentials()
+    try:
+        ig_account_id, access_token = get_ig_credentials()
+    except ValueError as e:
+        log.warning(f"Instagram credentials not configured yet — skipping cycle: {e}")
+        return
 
     brief = fetch_next_approved_brief(db)
     if not brief:
@@ -205,9 +251,9 @@ def run_publisher():
     permalink = publish_brief(brief, ig_account_id, access_token)
     if permalink:
         mark_as_published(brief["id"], permalink, db)
-        log.info(f"Published [{brief['pillar']}]: {permalink}")
+        log.info(f"\u2713 Published [{brief['pillar']}]: {permalink}")
     else:
-        log.warning(f"Publish failed for [{brief.get('pillar')}] -- check image_url and token.")
+        log.warning(f"\u2717 Publish failed for [{brief.get('pillar')}] — check image_url and token.")
 
     log.info("=" * 50)
 
@@ -219,11 +265,19 @@ if __name__ == "__main__":
 
     if args.daemon:
         log.info("Daemon mode: publishing at 22:00 UTC (6am SGT) and 04:00 UTC (12pm SGT) daily.")
-        run_publisher()
+        # Run once immediately for any queued posts
+        try:
+            run_publisher()
+        except Exception as e:
+            log.warning(f"Startup publish skipped: {e}")
+        # Schedule twice daily (UTC times = SGT-8)
         schedule.every().day.at("22:00").do(run_publisher)  # 6am SGT
         schedule.every().day.at("04:00").do(run_publisher)  # 12pm SGT
         while True:
-            schedule.run_pending()
+            try:
+                schedule.run_pending()
+            except Exception as e:
+                log.error(f"Scheduled publish job failed: {e}")
             time.sleep(60)
     else:
         run_publisher()
