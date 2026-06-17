@@ -49,12 +49,12 @@ log = logging.getLogger(__name__)
 # CONFIG — edit these
 # ─────────────────────────────────────────────
 COMPETITOR_HANDLES = [
-    # Mid-tier smoking / cigar / lifestyle accounts (10k–100k). Verify follower counts periodically.
-    "cigarsandleisure",      # cigar lifestyle, aesthetic content
-    "stogieguys",            # cigar reviews and culture
-    "premiumcigarlife",      # premium cigar lifestyle
-    "hookahsocial",          # hookah / shisha lifestyle
-    "smokelifestyle",        # general smoking lifestyle content
+    # Personal finance & wealth-building accounts. Verify follower counts periodically.
+    "grahamstephan",         # real estate & personal finance, 4M+ followers
+    "minoritymindset",       # wealth building for everyday people
+    "humphreytalks",         # personal finance & investing
+    "andreijikh",            # investing & financial freedom
+    "danielmartinegp",       # entrepreneurship & wealth
 ]
 
 POSTS_PER_ACCOUNT = 12          # How many recent posts to scrape per account
