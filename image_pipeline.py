@@ -1,5 +1,5 @@
 """
-Image Pipeline — @levi.smokes
+Image Pipeline — @levi.cashflow
 Generates post images for approved content_briefs that have no image_url.
 Uploads each image to Supabase Storage and writes the public URL back to the brief.
 
@@ -43,11 +43,11 @@ W, H = 1080, 1080
 
 # ── Brand colours per content pillar ──────────────────────────────────────────
 PILLAR_STYLES = {
-    "lifestyle":       {"bg": "#1A1A1A", "accent": "#D4AF37", "tag": "LIFESTYLE"},
-    "education":       {"bg": "#0D1B2A", "accent": "#4FC3F7", "tag": "EDUCATION"},
-    "product":         {"bg": "#1C1C1C", "accent": "#FF6B35", "tag": "PRODUCT"},
-    "behind-the-scenes": {"bg": "#12121F", "accent": "#A78BFA", "tag": "BEHIND THE SCENES"},
-    "engagement":      {"bg": "#1A0A0A", "accent": "#EF4444", "tag": "ENGAGEMENT"},
+    "wealth-building": {"bg": "#0D1F0D", "accent": "#22C55E",  "tag": "WEALTH BUILDING"},
+    "investing":       {"bg": "#0D1B2A", "accent": "#3B82F6",  "tag": "INVESTING"},
+    "mindset":         {"bg": "#1A1A0D", "accent": "#EAB308",  "tag": "MONEY MINDSET"},
+    "income":          {"bg": "#1A0D1A", "accent": "#A855F7",  "tag": "INCOME STREAMS"},
+    "savings":         {"bg": "#1A1A1A", "accent": "#F97316",  "tag": "SAVE SMARTER"},
 }
 DEFAULT_STYLE = {"bg": "#111111", "accent": "#D4AF37", "tag": "POST"}
 
@@ -170,7 +170,7 @@ def generate_image(brief: dict) -> bytes:
             y += (bbox[3] - bbox[1]) + 10
 
     # Handle watermark
-    draw.text((100, H - 80), "@levi.smokes", font=font_handle, fill=accent)
+    draw.text((100, H - 80), "@levi.cashflow", font=font_handle, fill=accent)
 
     # Week label
     week = brief.get("week_of", "")
