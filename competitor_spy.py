@@ -53,8 +53,8 @@ COMPETITOR_HANDLES = [
     "humphreytalks",         # personal finance, casual tone
     "lyfewithless",          # budgeting / frugality
     "wealthwithsasha",       # investing for beginners
-    "andrewtateadvice",      # placeholder — swap for a real one
-    "yourmoneycoach",        # placeholder — swap for a real one
+    "calltoleap",            # investing for beginners, strong carousel game
+    "andrei_jikh",           # investing basics + money mindset
 ]
 
 POSTS_PER_ACCOUNT = 12          # How many recent posts to scrape per account
