@@ -328,9 +328,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.daemon:
-        log.info("Daemon mode: running every Sunday at 08:00.")
+        log.info("Daemon mode: running every Sunday at 00:00 UTC (8am SGT).")
         run_performance_reviewer()
-        schedule.every().sunday.at("08:00").do(run_performance_reviewer)
+        schedule.every().sunday.at("00:00").do(run_performance_reviewer)
         while True:
             schedule.run_pending()
             time.sleep(60)
