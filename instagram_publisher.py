@@ -1,5 +1,5 @@
 """
-Instagram Publisher Agent — @levi.smokes Personal Finance
+Instagram Publisher Agent — @levi.cashflow Personal Finance
 Publishes approved content_briefs to Instagram twice daily: 6am and 12pm SGT.
 Uses Instagram Graph API to create and publish carousel/image posts.
 Updates content_briefs status to 'published' after posting.
@@ -7,7 +7,7 @@ Updates content_briefs status to 'published' after posting.
 NOTE: Instagram Graph API requires image URLs hosted publicly.
 Images are uploaded to a staging bucket (or use a Canva/S3 URL stored in brief).
 
-Run manually:    python instagram_publisher.py
+Run manually: python instagram_publisher.py
 Run on schedule: python instagram_publisher.py --daemon
 """
 
@@ -18,7 +18,7 @@ import argparse
 import schedule
 import time
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from supabase import create_client, Client
@@ -36,7 +36,6 @@ GRAPH_BASE = "https://graph.facebook.com/v21.0"
 # Posts per day slots (SGT = UTC+8, so 6am SGT = 22:00 UTC prev day, 12pm SGT = 04:00 UTC)
 PUBLISH_SLOTS_UTC = ["22:00", "04:00"]  # corresponds to 6am and 12pm SGT
 
-
 # ─────────────────────────────────────────────
 # CLIENTS
 # ─────────────────────────────────────────────
@@ -48,14 +47,12 @@ def init_supabase() -> Client:
         raise ValueError("Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env")
     return create_client(url, key)
 
-
 def get_ig_credentials() -> tuple[str, str]:
     ig_account_id = os.environ.get("INSTAGRAM_ACCOUNT_ID")
     access_token = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
     if not ig_account_id or not access_token:
         raise ValueError("Set INSTAGRAM_ACCOUNT_ID and INSTAGRAM_ACCESS_TOKEN in env")
     return ig_account_id, access_token
-
 
 # ─────────────────────────────────────────────
 # DATA FETCHING
@@ -86,6 +83,61 @@ def fetch_next_approved_brief(db: Client) -> Optional[dict]:
         log.error(f"Failed to fetch brief: {e}")
         return None
 
+# ─────────────────────────────────────────────
+# CATCH-UP SCHEDULING LOGIC
+# ─────────────────────────────────────────────
+
+def get_last_published_time(db: Client) -> Optional[datetime]:
+    """Get the most recent published_at timestamp from content_briefs."""
+    try:
+        result = (
+            db.table("content_briefs")
+            .select("published_at")
+            .eq("status", "published")
+            .order("published_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        if rows and rows[0].get("published_at"):
+            ts = rows[0]["published_at"].replace("Z", "+00:00")
+            return datetime.fromisoformat(ts)
+        return None
+    except Exception as e:
+        log.error(f"Failed to fetch last published time: {e}")
+        return None
+
+def should_catch_up(last_published: Optional[datetime]) -> bool:
+    """
+    Check if a scheduled window was missed since the last publish.
+    Scheduled slots: 22:00 UTC (6am SGT) and 04:00 UTC (12pm SGT).
+    Looks back up to 3 days to catch any missed window.
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    if last_published is None:
+        log.info("No prior publish found — will publish now.")
+        return True
+
+    slot_hours = [22, 4]  # UTC hours for each daily slot
+
+    for days_back in range(3):
+        for hour in slot_hours:
+            slot = (now_utc - timedelta(days=days_back)).replace(
+                hour=hour, minute=0, second=0, microsecond=0
+            )
+            if last_published < slot <= now_utc:
+                log.info(
+                    f"Missed scheduled slot: {slot.strftime('%Y-%m-%d %H:%M UTC')} "
+                    f"(last published: {last_published.strftime('%Y-%m-%d %H:%M UTC')})"
+                )
+                return True
+
+    log.info(
+        f"No missed windows. Last published: {last_published.strftime('%Y-%m-%d %H:%M UTC')}. "
+        f"Waiting for next scheduled slot."
+    )
+    return False
 
 # ─────────────────────────────────────────────
 # INSTAGRAM GRAPH API PUBLISHING
@@ -105,7 +157,6 @@ def create_single_image_container(ig_account_id: str, access_token: str, image_u
     log.info(f"Created media container: {container_id}")
     return container_id
 
-
 def create_carousel_item_container(ig_account_id: str, access_token: str, image_url: str) -> Optional[str]:
     """Create a carousel item container (no caption on individual slides)."""
     url = f"{GRAPH_BASE}/{ig_account_id}/media"
@@ -117,7 +168,6 @@ def create_carousel_item_container(ig_account_id: str, access_token: str, image_
     resp = requests.post(url, data=payload, timeout=30)
     resp.raise_for_status()
     return resp.json().get("id")
-
 
 def create_carousel_container(ig_account_id: str, access_token: str, item_ids: list[str], caption: str) -> Optional[str]:
     """Create the parent carousel container."""
@@ -134,7 +184,6 @@ def create_carousel_container(ig_account_id: str, access_token: str, item_ids: l
     log.info(f"Created carousel container: {container_id}")
     return container_id
 
-
 def publish_container(ig_account_id: str, access_token: str, container_id: str) -> Optional[str]:
     """Step 2: Publish the container. Returns the media ID of the live post."""
     url = f"{GRAPH_BASE}/{ig_account_id}/media_publish"
@@ -142,14 +191,12 @@ def publish_container(ig_account_id: str, access_token: str, container_id: str) 
         "creation_id": container_id,
         "access_token": access_token,
     }
-    # Wait for container to be ready
     time.sleep(5)
     resp = requests.post(url, data=payload, timeout=30)
     resp.raise_for_status()
     media_id = resp.json().get("id")
     log.info(f"Published! Media ID: {media_id}")
     return media_id
-
 
 def get_post_permalink(media_id: str, access_token: str) -> Optional[str]:
     """Get the permalink of a published post."""
@@ -159,22 +206,16 @@ def get_post_permalink(media_id: str, access_token: str) -> Optional[str]:
     resp.raise_for_status()
     return resp.json().get("permalink")
 
-
 def publish_brief(brief: dict, ig_account_id: str, access_token: str) -> Optional[str]:
-    """
-    Publish a content brief to Instagram.
-    Uses image_url from the brief (set by Canva export or image gen step).
-    Falls back to a placeholder if no image is set.
-    """
+    """Publish a content brief to Instagram."""
     caption = brief.get("caption", "")
     image_url = brief.get("image_url")
     post_format = brief.get("format", "carousel")
 
     if not image_url:
-        log.warning(f"No image_url for brief {brief['id']} — skipping publish. Add image URLs first.")
+        log.warning(f"No image_url for brief {brief['id']} — skipping publish.")
         return None
 
-    # Parse image_url — could be a JSON array of URLs for carousel
     image_urls = []
     if image_url.startswith("["):
         try:
@@ -185,20 +226,18 @@ def publish_brief(brief: dict, ig_account_id: str, access_token: str) -> Optiona
         image_urls = [image_url]
 
     if post_format == "carousel" and len(image_urls) > 1:
-        # Multi-image carousel
         log.info(f"Publishing carousel with {len(image_urls)} slides...")
         item_ids = []
-        for url in image_urls[:10]:  # IG max 10 slides
+        for url in image_urls[:10]:
             item_id = create_carousel_item_container(ig_account_id, access_token, url)
             if item_id:
                 item_ids.append(item_id)
-                time.sleep(1)
+            time.sleep(1)
         if not item_ids:
             log.error("No carousel items created.")
             return None
         container_id = create_carousel_container(ig_account_id, access_token, item_ids, caption)
     else:
-        # Single image post
         log.info("Publishing single image post...")
         container_id = create_single_image_container(ig_account_id, access_token, image_urls[0], caption)
 
@@ -212,7 +251,6 @@ def publish_brief(brief: dict, ig_account_id: str, access_token: str) -> Optiona
     permalink = get_post_permalink(media_id, access_token)
     return permalink
 
-
 # ─────────────────────────────────────────────
 # SUPABASE UPDATE
 # ─────────────────────────────────────────────
@@ -225,7 +263,6 @@ def mark_as_published(brief_id: str, permalink: str, db: Client):
         "published_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", brief_id).execute()
     log.info(f"Marked brief {brief_id} as published: {permalink}")
-
 
 # ─────────────────────────────────────────────
 # MAIN PUBLISH CYCLE
@@ -251,12 +288,11 @@ def run_publisher():
     permalink = publish_brief(brief, ig_account_id, access_token)
     if permalink:
         mark_as_published(brief["id"], permalink, db)
-        log.info(f"\u2713 Published [{brief['pillar']}]: {permalink}")
+        log.info(f"✓ Published [{brief['pillar']}]: {permalink}")
     else:
-        log.warning(f"\u2717 Publish failed for [{brief.get('pillar')}] — check image_url and token.")
+        log.warning(f"✗ Publish failed for [{brief.get('pillar')}] — check image_url and token.")
 
     log.info("=" * 50)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Instagram Publisher Agent")
@@ -265,14 +301,23 @@ if __name__ == "__main__":
 
     if args.daemon:
         log.info("Daemon mode: publishing at 22:00 UTC (6am SGT) and 04:00 UTC (12pm SGT) daily.")
-        # Run once immediately for any queued posts
+
+        # Smart catch-up: publish immediately if a scheduled window was missed since last post
         try:
-            run_publisher()
+            db = init_supabase()
+            last_published = get_last_published_time(db)
+            if should_catch_up(last_published):
+                log.info("Catch-up publish triggered (missed window or first run).")
+                run_publisher()
+            else:
+                log.info("Skipping startup publish — already posted within current window.")
         except Exception as e:
-            log.warning(f"Startup publish skipped: {e}")
-        # Schedule twice daily (UTC times = SGT-8)
+            log.warning(f"Catch-up check failed: {e}")
+
+        # Schedule twice daily (UTC)
         schedule.every().day.at("22:00").do(run_publisher)  # 6am SGT
         schedule.every().day.at("04:00").do(run_publisher)  # 12pm SGT
+
         while True:
             try:
                 schedule.run_pending()
