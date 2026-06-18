@@ -1,20 +1,22 @@
 """
-Content Strategist Agent — @levi.smokes Personal Finance
-Reads competitor post data + trend memory from Supabase.
-Generates 5 weekly content briefs (one per pillar) using Claude Sonnet.
-Writes briefs to Supabase `content_briefs` table.
+Content Strategist — @levi.cashflow
+Generates content briefs for a personal finance Instagram account targeting a
+global audience of 20-35 year olds who want to build wealth.
 
-Run manually:    python content_strategist.py
-Run on schedule: python content_strategist.py --daemon  (runs every Monday 9am)
-Deploy alongside competitor_spy.py on Railway.
+Pillar names MUST match image_pipeline.py PILLAR_STYLES keys:
+  wealth-building | investing | money-mindset | income-streams | budgeting
+
+Run manually: python content_strategist.py
+Run on schedule: python content_strategist.py --daemon
 """
 
 import os
 import json
+import time
 import logging
 import argparse
 import schedule
-import time
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -23,242 +25,180 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-CONTENT_PILLARS = [
-    "investing basics",
-    "budgeting hacks",
-    "money mindset",
-    "side hustle",
-    "debt payoff",
-]
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
+# ── Account identity ───────────────────────────────────────────────────────────
 ACCOUNT_VOICE = """
-Account: @levi.smokes (personal finance for young Singaporeans / Southeast Asians)
-Tone: Casual, direct, slightly sarcastic — like a smart friend who learned money the hard way
-Audience: 20-35 year olds in Singapore/SEA who want to build wealth but find finance intimidating
-Style: Carousels and Reels. Hook-first. Real examples over theory. Singapore context when relevant.
-Avoid: Boring "top 5 tips" energy. Generic advice. Anything that sounds like a textbook.
+Account: @levi.cashflow (personal finance for ambitious 20-35 year olds worldwide)
+Tone: Casual, direct, slightly contrarian — like a smart friend who learned money the hard way
+Audience: Young professionals globally who want to build wealth but find traditional finance content dry or intimidating
+Style: Carousels and Reels. Hook-first. Real examples over theory. Universally relatable money situations.
+Avoid: Country-specific rules, platforms, or currency amounts. Boring "top 5 tips" energy. Generic "invest early" advice. Anything textbook.
+Goal: Every post should make someone think "I never thought about it that way" or "I needed to hear this."
 """
 
-BRIEF_PROMPT = """You are a content strategist for a personal finance Instagram account.
+# ── Content pillars (must match image_pipeline.py PILLAR_STYLES keys) ─────────
+CONTENT_PILLARS = [
+    "wealth-building",
+    "investing",
+    "money-mindset",
+    "income-streams",
+    "budgeting",
+]
+
+BRIEF_PROMPT = """
+You are a content strategist for @levi.cashflow, a personal finance Instagram account with 10M-follower ambitions.
 
 Account voice:
 {account_voice}
 
-Here are the top-performing competitor posts from the last 7 days:
-{competitor_posts}
+Today's date: {today}
+Content pillar to write for: {pillar}
+Format: {format}
 
-Here is the weekly trend insight from competitor analysis:
-{weekly_insight}
+Generate ONE highly engaging content brief. Use this exact JSON format — no commentary, just the JSON object:
 
-Generate a detailed content brief for the pillar: **{pillar}**
-
-Return a JSON object with exactly these fields:
 {{
   "pillar": "{pillar}",
-  "hook_idea": "The opening line / hook (scroll-stopping — question, hot take, or surprising stat)",
-  "format": "carousel",
-  "angle": "The unique angle that makes this different from generic content",
+  "format": "{format}",
+  "week_of": "{week_of}",
+  "hook_idea": "<Single punchy opening line. Max 12 words. Make it provocative, surprising or counter-intuitive. No country-specific references.>",
+  "angle": "<1-2 sentences describing the specific insight or counter-narrative. What's the non-obvious angle?>",
+  "caption_starter": "<First 2-3 sentences of the actual Instagram caption. Must match hook energy. Include a cliffhanger that makes them want to read more.>",
   "content_outline": [
-    "Slide 1: ...",
-    "Slide 2: ...",
-    "Slide 3: ...",
-    "Slide 4: ...",
-    "Slide 5: ...",
-    "Slide 6: CTA"
+    "Slide 1: Hook — <hook text>",
+    "Slide 2: Problem — <the relatable pain point>",
+    "Slide 3: Insight — <the non-obvious truth>",
+    "Slide 4: Proof — <a concrete example or analogy>",
+    "Slide 5: Action step — <one specific thing they can do today>",
+    "Slide 6: CTA — Follow @levi.cashflow for more money moves"
   ],
-  "caption_starter": "First 2 lines of caption (hook before the more cutoff)",
-  "why_it_will_work": "1-2 sentences: what competitor data shows this will perform",
-  "estimated_reach_tier": "high"
+  "hashtags": ["#personalfinance", "#moneytips", "#financialfreedom", "#investing", "#wealthbuilding"],
+  "status": "approved"
 }}
 
-Make hook_idea and angle specific to Singapore/SEA context where possible.
-Return ONLY the JSON object, no other text.
+Requirements:
+- hook_idea must be standalone — punchy enough to stop the scroll with zero context
+- No dollar amounts, no country-specific tax terms, no local platform names (no "401k", no "CPF", no "ISA")
+- Use universal money concepts: income, expenses, savings rate, compound growth, debt, net worth
+- Real people can relate to this content regardless of where they live
+- Make it feel personal, not like a finance textbook
 """
+
+FORMAT_OPTIONS = ["carousel", "carousel", "carousel", "reel"]
 
 
 def init_supabase() -> Client:
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        raise ValueError("Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env")
-    return create_client(url, key)
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise ValueError("Set SUPABASE_URL and SUPABASE_SERVICE_KEY in env")
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def init_anthropic() -> anthropic.Anthropic:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("Set ANTHROPIC_API_KEY in .env")
-    return anthropic.Anthropic(api_key=api_key)
-
-
-def fetch_top_competitor_posts(db: Client, days: int = 7, limit: int = 20) -> list[dict]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    try:
-        result = (
-            db.table("competitor_posts")
-            .select("handle, caption_preview, likes, comments, post_type, posted_at, topic_detected, post_url")
-            .gte("posted_at", cutoff)
-            .order("likes", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        posts = result.data or []
-        log.info(f"Fetched {len(posts)} top competitor posts from last {days} days.")
-        return posts
-    except Exception as e:
-        log.error(f"Failed to fetch competitor posts: {e}")
-        return []
-
-
-def fetch_weekly_insight(db: Client) -> str:
-    try:
-        result = (
-            db.table("agent_memory")
-            .select("audience_insight, patterns_detected, date")
-            .order("date", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            row = result.data[0]
-            insight = row.get("audience_insight", "")
-            patterns = row.get("patterns_detected", "[]")
-            if isinstance(patterns, str):
-                patterns = json.loads(patterns)
-            return f"Trending topics: {', '.join(patterns)}\n\nWeekly insight: {insight}"
-        return "No trend data available yet."
-    except Exception as e:
-        log.error(f"Failed to fetch weekly insight: {e}")
-        return "No trend data available."
-
-
-def generate_brief(
-    pillar: str,
-    competitor_posts: list[dict],
-    weekly_insight: str,
-    claude: anthropic.Anthropic
-) -> Optional[dict]:
-    relevant = [p for p in competitor_posts if p.get("topic_detected") == pillar]
-    posts_to_use = relevant[:10] if len(relevant) >= 3 else competitor_posts[:10]
-
-    posts_summary = [
-        {
-            "handle": p.get("handle"),
-            "topic": p.get("topic_detected"),
-            "format": p.get("post_type"),
-            "likes": p.get("likes"),
-            "caption": p.get("caption_preview", "")[:150],
-        }
-        for p in posts_to_use
-    ]
-
-    prompt = BRIEF_PROMPT.format(
-        account_voice=ACCOUNT_VOICE,
-        competitor_posts=json.dumps(posts_summary, indent=2),
-        weekly_insight=weekly_insight,
-        pillar=pillar,
+def get_recent_pillars(db: Client, days: int = 7) -> list:
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    result = (
+        db.table("content_briefs")
+        .select("pillar")
+        .gte("created_at", since)
+        .execute()
     )
+    return [row["pillar"] for row in (result.data or []) if row.get("pillar")]
 
+
+def pick_pillar(db: Client) -> str:
+    recent = get_recent_pillars(db)
+    fresh = [p for p in CONTENT_PILLARS if p not in recent]
+    pool = fresh if fresh else CONTENT_PILLARS
+    return random.choice(pool)
+
+
+def save_brief(db: Client, brief: dict):
+    result = db.table("content_briefs").insert(brief).execute()
+    rows = result.data or []
+    if rows:
+        return rows[0].get("id")
+    return None
+
+
+def generate_brief(pillar: str):
+    if not ANTHROPIC_KEY:
+        raise ValueError("Set ANTHROPIC_API_KEY in env")
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    week_of = (datetime.now(timezone.utc) - timedelta(days=datetime.now(timezone.utc).weekday())).strftime("%Y-%m-%d")
+    fmt = random.choice(FORMAT_OPTIONS)
+    prompt = BRIEF_PROMPT.format(
+        account_voice=ACCOUNT_VOICE.strip(),
+        today=today,
+        pillar=pillar,
+        format=fmt,
+        week_of=week_of,
+    )
+    log.info(f"Generating brief: pillar={pillar}, format={fmt}")
+    message = client.messages.create(
+        model="claude-opus-4-5" if os.environ.get("USE_OPUS") else "claude-sonnet-4-5",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = message.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
     try:
-        response = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.rsplit("```", 1)[0]
         brief = json.loads(raw)
-        log.info(f"Generated brief for pillar: {pillar}")
-        return brief
-    except Exception as e:
-        log.error(f"Failed to generate brief for {pillar}: {e}")
+    except json.JSONDecodeError as e:
+        log.error(f"Failed to parse brief JSON: {e}\nRaw:\n{raw[:300]}")
         return None
-
-
-def save_briefs_to_supabase(briefs: list[dict], db: Client) -> int:
-    if not briefs:
-        return 0
-
-    week_of = datetime.now(timezone.utc).date().isoformat()
-    saved = 0
-    for brief in briefs:
-        try:
-            row = {
-                "week_of": week_of,
-                "pillar": brief.get("pillar"),
-                "hook_idea": brief.get("hook_idea"),
-                "format": brief.get("format"),
-                "angle": brief.get("angle"),
-                "content_outline": json.dumps(brief.get("content_outline", [])),
-                "caption_starter": brief.get("caption_starter"),
-                "why_it_will_work": brief.get("why_it_will_work"),
-                "estimated_reach_tier": brief.get("estimated_reach_tier"),
-                "status": "draft",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            db.table("content_briefs").insert(row).execute()
-            saved += 1
-        except Exception as e:
-            log.warning(f"Failed to save brief for {brief.get('pillar')}: {e}")
-
-    log.info(f"Saved {saved}/{len(briefs)} content briefs to Supabase.")
-    return saved
+    if isinstance(brief.get("content_outline"), list):
+        brief["content_outline"] = json.dumps(brief["content_outline"])
+    if isinstance(brief.get("hashtags"), list):
+        brief["hashtags"] = json.dumps(brief["hashtags"])
+    brief["status"] = "approved"
+    brief["created_at"] = datetime.now(timezone.utc).isoformat()
+    return brief
 
 
 def run_strategist():
     log.info("=" * 50)
-    log.info("Content Strategist starting...")
-    log.info("=" * 50)
-
+    log.info(f"Content strategist running at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     db = init_supabase()
-    claude = init_anthropic()
-
-    competitor_posts = fetch_top_competitor_posts(db, days=7, limit=20)
-    weekly_insight = fetch_weekly_insight(db)
-
-    if not competitor_posts:
-        log.warning("No competitor post data found. Run the Competitor Spy first.")
+    pillar = pick_pillar(db)
+    brief = generate_brief(pillar)
+    if not brief:
+        log.error("Brief generation failed — skipping this run.")
         return
-
-    log.info(f"Weekly insight preview: {weekly_insight[:200]}")
-
-    briefs = []
-    for pillar in CONTENT_PILLARS:
-        brief = generate_brief(pillar, competitor_posts, weekly_insight, claude)
-        if brief:
-            briefs.append(brief)
-        time.sleep(2)
-
-    saved = save_briefs_to_supabase(briefs, db)
-
-    log.info("=" * 50)
-    log.info(f"Content Strategist complete. {saved}/{len(CONTENT_PILLARS)} briefs saved.")
-    for brief in briefs:
-        log.info(f"  [{brief.get('pillar')}] {brief.get('format')} — {brief.get('hook_idea', '')[:80]}")
+    brief_id = save_brief(db, brief)
+    if brief_id:
+        log.info(f"✓ Saved brief [{pillar}] with id {brief_id}")
+        log.info(f"  Hook: {brief.get('hook_idea', '')[:80]}")
+    else:
+        log.error("Failed to save brief to Supabase.")
     log.info("=" * 50)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Content Strategist Agent")
-    parser.add_argument("--daemon", action="store_true", help="Run weekly on Mondays at 9am")
+    parser.add_argument("--daemon", action="store_true", help="Run every 6 hours")
     args = parser.parse_args()
-
     if args.daemon:
-        log.info("Daemon mode: running every Monday at 9:00 AM.")
-        run_strategist()
-        schedule.every().monday.at("09:00").do(run_strategist)
+        log.info("Daemon mode: generating content brief every 6 hours.")
+        try:
+            run_strategist()
+        except Exception as e:
+            log.warning(f"Startup run failed: {e}")
+        schedule.every(6).hours.do(run_strategist)
         while True:
-            schedule.run_pending()
+            try:
+                schedule.run_pending()
+            except Exception as e:
+                log.error(f"Strategist job failed: {e}")
             time.sleep(60)
     else:
         run_strategist()
